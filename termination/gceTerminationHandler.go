@@ -15,7 +15,10 @@
 package termination
 
 import (
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/golang/glog"
@@ -167,6 +170,11 @@ func (g *gceTerminationSource) WatchState() <-chan NodeTerminationState {
 			return
 		}
 	}, time.Second)
+
+	sigs := make(chan os.Signal, 1)
+
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
 	return g.updateChannel
 }
 

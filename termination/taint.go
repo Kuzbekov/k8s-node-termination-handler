@@ -16,7 +16,7 @@ package termination
 
 import (
 	"github.com/golang/glog"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	client "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
@@ -61,6 +61,7 @@ func (n *nodeTaintHandler) ApplyTaint() error {
 	if n.annotation != "" {
 		node.Annotations[n.annotation] = "true"
 		updated = true
+		glog.V(4).Infof("Node %q already has annotation: %v in annotations %v ", n.node, n.annotation, node.Annotations)
 	} else {
 		node, updated = addOrUpdateTaint(node, n.taint)
 		glog.V(4).Infof("Node %q taints after removal; updated %v: %v", n.node, updated, node.Spec.Taints)

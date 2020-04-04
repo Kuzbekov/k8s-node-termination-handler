@@ -15,7 +15,10 @@
 package termination
 
 import (
+	"os"
+	"os/signal"
 	"reflect"
+	"sync"
 	"syscall"
 	"time"
 
@@ -55,26 +58,25 @@ func (n *nodeTerminationHandler) processNodeState() error {
 	// Handle a node that is about to be terminated.
 	// Log an event that a termination is impending.
 	// Reserve some time for restarting the node.
-	timeout := n.currentNodeState.TerminationTime.Sub(time.Now())
-	// If the timeout is lesser than 2 minutes it is assumed that there isn't much time to reserve for restarts.
-	// By default such nodes are preemptible nodes which do not benefit from node restarts.
-	if timeout.Seconds() >= 120 {
-		timeout = timeout - time.Minute
+
+	if err := n.startEviction(); err != nil {
+		glog.Errorf("Failed to evict", err)
+		return err
 	}
+
+	return nil
+}
+
+func (n *nodeTerminationHandler) startEviction() error {
+	timeout := 25 * time.Second
+
 	glog.V(4).Infof("Applying taint prior to handling termination")
-	if err := sendSlack(); err != nil {
-		glog.Errorf("Failed to send slack: %v", err)
-	}
 	if err := n.taintHandler.ApplyTaint(); err != nil {
 		return err
 	}
 	glog.V(4).Infof("Evicting all pods from the node")
 	if err := n.podEvictionHandler.EvictPods(n.excludePods, timeout); err != nil {
 		return err
-	}
-	if n.currentNodeState.NeedsReboot {
-		glog.V(4).Infof("Rebooting the node")
-		return n.rebootNode()
 	}
 	return nil
 }
@@ -93,24 +95,60 @@ func (n *nodeTerminationHandler) Start() error {
 		glog.V(2).Infof("Failed to process initial node state - %v", err)
 		return err
 	}
+	c := make(chan os.Signal)
+	signal.Notify(c, syscall.SIGUSR1)
+	m := &sync.Mutex{}
+	processing := false
+
+	go func() {
+		<-c
+		glog.Info("Got signal for preemption")
+		m.Lock()
+		if n.currentNodeState.PendingTermination {
+			m.Unlock()
+			return
+		}
+		n.currentNodeState.PendingTermination = true
+		processing = true
+		m.Unlock()
+		err := n.processNodeState()
+		if err != nil {
+			glog.Errorf("Failed to process node state update.\nState: %v\nError: %v", n.currentNodeState, err)
+		}
+
+	}()
+
 	for state := range n.terminationSource.WatchState() {
-		if !reflect.DeepEqual(state, n.currentNodeState) {
-			n.currentNodeState = state
-			if err := wait.ExponentialBackoff(wait.Backoff{
-				Duration: time.Second,
-				Factor:   1.2,
-				Steps:    10, // Results in ~6 seconds of wait at the max.
-			}, func() (bool, error) {
-				err := n.processNodeState()
-				if err != nil {
-					glog.Errorf("Failed to process node state update.\nState: %v\nError: %v", n.currentNodeState, err)
-					return false, nil
+
+		if !processing {
+			m.Lock()
+			processing = true
+			if !reflect.DeepEqual(state, n.currentNodeState) {
+				n.currentNodeState = state
+				m.Unlock()
+				if err := wait.ExponentialBackoff(wait.Backoff{
+					Duration: time.Second,
+					Factor:   1.2,
+					Steps:    10, // Results in ~6 seconds of wait at the max.
+				}, func() (bool, error) {
+					err := n.processNodeState()
+
+					if err != nil {
+						glog.Errorf("Failed to process node state update.\nState: %v\nError: %v", n.currentNodeState, err)
+						return false, nil
+					}
+
+					return true, nil
+				}); err != nil {
+					return err
 				}
-				return true, nil
-			}); err != nil {
-				return err
+			} else {
+				m.Unlock()
 			}
 		}
+		m.Lock()
+		processing = false
+		m.Unlock()
 	}
 	return nil
 }

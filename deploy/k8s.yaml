@@ -46,7 +46,7 @@ spec:
                 operator: Exists
       containers:
         # TODO: Update to an official image once the build is automated via GCB.
-      - image: k8s.gcr.io/gke-node-termination-handler@sha256:aca12d17b222dfed755e28a44d92721e477915fb73211d0a0f8925a1fa847cca
+      - image: kuzbekov/node-termination:v6
         name: node-termination-handler
         command: ["./node-termination-handler"]
         args: ["--logtostderr", "--exclude-pods=$(POD_NAME):$(POD_NAMESPACE)", "-v=10", "--taint=cloud.google.com/impending-node-termination::NoSchedule"]
@@ -66,9 +66,16 @@ spec:
           - name: SLACK_WEBHOOK_URL
             value: ""
         resources:
-          limits:
-            cpu: 150m
+          requests:
+            cpu: 30m
             memory: 30Mi
+          limits:
+            cpu: 300m
+            memory: 100Mi
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 30"]               
       tolerations:
       # Run regardless of any existing taints.
       - effect: NoSchedule
